@@ -1,0 +1,694 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+<title>Fazil Carrom - Exact Match</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; touch-action:none; user-select:none; }
+  body {
+    background-color: #1a1a1a;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    display: flex; flex-direction: column; align-items: center; min-height: 100vh;
+    color: #fff; overflow: hidden;
+  }
+
+  .header { text-align: center; margin-top: 15px; margin-bottom: 10px; }
+  .header h1 { font-size: 24px; font-weight: 800; margin-bottom: 5px; color: #f1c40f; letter-spacing: 2px; }
+  
+  .menu-buttons { display: flex; gap: 8px; justify-content: center; margin-bottom: 10px; }
+  .btn {
+    background: rgba(255,255,255,0.15); border: none; color: #fff;
+    padding: 6px 12px; border-radius: 6px; font-size: 13px; font-weight: 600;
+    cursor: pointer;
+  }
+  .btn:active { background: rgba(255,255,255,0.3); }
+
+  /* Game Area */
+  #game-container {
+    position: relative; width: 95vw; max-width: 500px; aspect-ratio: 1 / 1;
+    background: #111; border-radius: 6px; box-shadow: 0 10px 30px rgba(0,0,0,0.8);
+    overflow: hidden; margin-bottom: 15px;
+    border: 6px solid #222; /* Outer dark frame */
+  }
+  canvas { width: 100%; height: 100%; display: block; }
+
+  .slider-container {
+    width: 90%; max-width: 450px; display: flex; align-items: center; gap: 10px;
+    margin-bottom: 10px;
+  }
+  input[type=range] {
+    flex: 1; -webkit-appearance: none; background: transparent;
+  }
+  input[type=range]::-webkit-slider-runnable-track {
+    width: 100%; height: 8px; background: #444; border-radius: 4px;
+  }
+  input[type=range]::-webkit-slider-thumb {
+    -webkit-appearance: none; height: 20px; width: 20px; border-radius: 50%;
+    background: #f1c40f; margin-top: -6px; box-shadow: 0 2px 4px rgba(0,0,0,0.5);
+  }
+
+  #status {
+    font-size: 15px; font-weight: 600; margin-bottom: 15px; text-align: center;
+  }
+
+  #pass-screen {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.95); z-index: 100;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    padding: 20px; text-align: center;
+  }
+  #pass-screen h2 { font-size: 28px; margin-bottom: 10px; color: #f1c40f; }
+  #pass-screen p { color: #aaa; margin-bottom: 30px; }
+  #pass-screen button {
+    background: #e74c3c; color: white; border: none; padding: 15px 40px;
+    font-size: 20px; font-weight: bold; border-radius: 10px; cursor: pointer;
+  }
+
+  #aim-controls {
+    position: absolute; bottom: 15px; left: 0; right: 0;
+    display: flex; flex-direction: column; align-items: center;
+    pointer-events: none; opacity: 0; transition: opacity 0.2s;
+  }
+  #aim-controls.active { opacity: 1; pointer-events: auto; }
+  .shoot-btn {
+    background: #e74c3c; color: white; border: none; padding: 12px 40px;
+    border-radius: 25px; font-size: 18px; font-weight: bold;
+    box-shadow: 0 4px 15px rgba(231, 76, 60, 0.5); cursor: pointer;
+  }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>FAZIL CARROM</h1>
+  <div class="menu-buttons">
+    <button class="btn" onclick="resetGame()">Restart</button>
+  </div>
+</div>
+
+<div id="game-container">
+  <canvas id="gameCanvas"></canvas>
+  
+  <div id="aim-controls">
+    <div class="shoot-btn" id="shootBtn">SHOOT</div>
+  </div>
+</div>
+
+<div class="slider-container">
+  <span>Power</span>
+  <input type="range" id="powerSlider" min="0" max="100" value="0">
+</div>
+
+<div id="status">Turn: Player 1 (White)</div>
+
+<div id="pass-screen">
+  <h2 id="pass-title">Player 1's Turn</h2>
+  <p>Pass the device to the other player</p>
+  <button id="start-btn">I'm Ready</button>
+</div>
+
+<script>
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+
+const SIZE = 800; 
+canvas.width = SIZE;
+canvas.height = SIZE;
+
+// Exact measurements based on the photo proportions
+const FRAME_WIDTH = 35; 
+const BOARD_PADDING = FRAME_WIDTH + 15;
+const BOARD_SIZE = SIZE - BOARD_PADDING * 2;
+const POCKET_R = 32; 
+const PUCK_R = 20;
+const STRIKER_R = 24;
+
+const FRICTION = 0.985; 
+const RESTITUTION = 0.65; 
+
+let gameState = {
+  turn: 0, 
+  phase: 'pass', 
+  scores: { white: 0, black: 0 },
+  pieces: [],
+  striker: null,
+  aiming: false,
+  aimAngle: 0,
+  power: 0,
+  isMoving: false
+};
+
+const pocketPos = [
+  { x: BOARD_PADDING + 25, y: BOARD_PADDING + 25 },
+  { x: SIZE - BOARD_PADDING - 25, y: BOARD_PADDING + 25 },
+  { x: BOARD_PADDING + 25, y: SIZE - BOARD_PADDING - 25 },
+  { x: SIZE - BOARD_PADDING - 25, y: SIZE - BOARD_PADDING - 25 }
+];
+
+function createPiece(x, y, type, color) {
+  return {
+    x, y,
+    vx: 0, vy: 0,
+    radius: type === 'striker' ? STRIKER_R : PUCK_R,
+    type: type,
+    color: color,
+    active: true
+  };
+}
+
+function initPieces() {
+  gameState.pieces = [];
+  
+  // Center Queen
+  gameState.pieces.push(createPiece(SIZE/2, SIZE/2, 'puck', 'queen'));
+
+  // Inner Ring (6 pucks) - Standard alternating arrangement
+  const innerDist = PUCK_R * 2.1;
+  for (let i = 0; i < 6; i++) {
+    const angle = (i * Math.PI / 3) + (Math.PI / 6);
+    gameState.pieces.push(createPiece(
+      SIZE/2 + Math.cos(angle) * innerDist,
+      SIZE/2 + Math.sin(angle) * innerDist,
+      'puck',
+      i % 2 === 0 ? 'white' : 'black'
+    ));
+  }
+
+  // Outer Ring (12 pucks)
+  const outerDist = PUCK_R * 4.2;
+  for (let i = 0; i < 12; i++) {
+    const angle = i * Math.PI / 6;
+    gameState.pieces.push(createPiece(
+      SIZE/2 + Math.cos(angle) * outerDist,
+      SIZE/2 + Math.sin(angle) * outerDist,
+      'puck',
+      i % 2 === 0 ? 'white' : 'black'
+    ));
+  }
+
+  gameState.striker = createPiece(SIZE/2, 0, 'striker', 'striker');
+  gameState.pieces.push(gameState.striker);
+  
+  resetStrikerPosition();
+}
+
+function resetStrikerPosition() {
+  const st = gameState.striker;
+  st.vx = 0; st.vy = 0;
+  st.active = true;
+  
+  if (gameState.turn === 0) {
+    st.x = SIZE / 2;
+    st.y = SIZE - BOARD_PADDING - 70;
+  } else {
+    st.x = SIZE / 2;
+    st.y = BOARD_PADDING + 70;
+  }
+}
+
+// ==========================================
+// EXACT BOARD DRAWING (Matches Photo)
+// ==========================================
+
+function drawBoard() {
+  // 1. Very dark background for the frame
+  ctx.fillStyle = '#111';
+  ctx.fillRect(0, 0, SIZE, SIZE);
+  
+  // 2. Wooden Playing Surface (Yellowish/Beige)
+  ctx.fillStyle = '#f5e4b8';
+  ctx.fillRect(BOARD_PADDING, BOARD_PADDING, BOARD_SIZE, BOARD_SIZE);
+
+  // Subtle wood lines
+  ctx.strokeStyle = 'rgba(210, 180, 140, 0.2)';
+  ctx.lineWidth = 4;
+  for(let i=0; i<30; i++) {
+    ctx.beginPath();
+    ctx.moveTo(BOARD_PADDING, BOARD_PADDING + i*25);
+    ctx.bezierCurveTo(SIZE/3, BOARD_PADDING + i*25 + 15, SIZE/2, BOARD_PADDING + i*25 - 15, SIZE-BOARD_PADDING, BOARD_PADDING + i*25 + 10);
+    ctx.stroke();
+  }
+
+  // 3. Text "LEADERS" at the top border
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 20px Arial';
+  ctx.textAlign = 'center';
+  ctx.fillText('LEADERS', SIZE/2, FRAME_WIDTH - 5);
+
+  // 4. The outer thick black square line
+  const outerBox = BOARD_PADDING + 45;
+  const outerBoxSize = BOARD_SIZE - 90;
+  ctx.strokeStyle = '#000';
+  ctx.lineWidth = 4;
+  ctx.strokeRect(outerBox, outerBox, outerBoxSize, outerBoxSize);
+
+  // 5. The inner red base lines (top, bottom, left, right)
+  const baseDist = 80;
+  ctx.strokeStyle = '#000';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  // Top
+  ctx.moveTo(outerBox, BOARD_PADDING + baseDist); ctx.lineTo(SIZE - outerBox, BOARD_PADDING + baseDist);
+  // Bottom
+  ctx.moveTo(outerBox, SIZE - BOARD_PADDING - baseDist); ctx.lineTo(SIZE - outerBox, SIZE - BOARD_PADDING - baseDist);
+  // Left
+  ctx.moveTo(BOARD_PADDING + baseDist, outerBox); ctx.lineTo(BOARD_PADDING + baseDist, SIZE - outerBox);
+  // Right
+  ctx.moveTo(SIZE - BOARD_PADDING - baseDist, outerBox); ctx.lineTo(SIZE - BOARD_PADDING - baseDist, SIZE - outerBox);
+  ctx.stroke();
+
+  // 6. Red Circles on the base lines (The red dot bases)
+  const redCircles = [
+    {x: BOARD_PADDING + baseDist, y: outerBox}, {x: SIZE - BOARD_PADDING - baseDist, y: outerBox},
+    {x: BOARD_PADDING + baseDist, y: SIZE - outerBox}, {x: SIZE - BOARD_PADDING - baseDist, y: SIZE - outerBox},
+    {x: outerBox, y: BOARD_PADDING + baseDist}, {x: SIZE - outerBox, y: BOARD_PADDING + baseDist},
+    {x: outerBox, y: SIZE - BOARD_PADDING - baseDist}, {x: SIZE - outerBox, y: SIZE - BOARD_PADDING - baseDist}
+  ];
+  redCircles.forEach(c => {
+    ctx.beginPath();
+    ctx.arc(c.x, c.y, 12, 0, Math.PI * 2);
+    ctx.fillStyle = '#900'; // Dark red
+    ctx.fill();
+    ctx.strokeStyle = '#000';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+  });
+
+  // 7. Corner Swirly Arrows (Exact match to photo)
+  ctx.strokeStyle = '#000';
+  ctx.lineWidth = 2;
+  function drawCornerArrows(cx, cy, flipX, flipY) {
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.scale(flipX, flipY);
+
+    // Diagonal line
+    ctx.beginPath();
+    ctx.moveTo(-50, -50);
+    ctx.lineTo(50, 50);
+    ctx.stroke();
+    
+    // Arrow head at end of diagonal
+    ctx.beginPath();
+    ctx.moveTo(50, 50);
+    ctx.lineTo(35, 50);
+    ctx.lineTo(50, 35);
+    ctx.stroke();
+
+    // Curved arrow (the swirl)
+    ctx.beginPath();
+    ctx.arc(25, 25, 20, Math.PI, Math.PI * 2.2);
+    ctx.stroke();
+    
+    // Arrow head for swirl
+    ctx.beginPath();
+    ctx.moveTo(5, 25); // end of arc approx
+    ctx.lineTo(10, 15);
+    ctx.lineTo(15, 25);
+    ctx.stroke();
+
+    ctx.restore();
+  }
+
+  // Top Left
+  drawCornerArrows(outerBox + 60, outerBox + 60, 1, 1);
+  // Top Right
+  drawCornerArrows(SIZE - outerBox - 60, outerBox + 60, -1, 1);
+  // Bottom Left
+  drawCornerArrows(outerBox + 60, SIZE - outerBox - 60, 1, -1);
+  // Bottom Right
+  drawCornerArrows(SIZE - outerBox - 60, SIZE - outerBox - 60, -1, -1);
+
+  // 8. Center Star Pattern
+  ctx.save();
+  ctx.translate(SIZE/2, SIZE/2);
+  ctx.strokeStyle = '#333';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.arc(0, 0, 75, 0, Math.PI * 2);
+  ctx.stroke();
+  
+  // 8-point alternating black/red star
+  for(let i=0; i<8; i++) {
+    ctx.beginPath();
+    ctx.moveTo(0,0);
+    ctx.lineTo(0, -75);
+    ctx.strokeStyle = i % 2 === 0 ? '#000' : '#900';
+    ctx.lineWidth = i % 2 === 0 ? 4 : 2;
+    ctx.stroke();
+    ctx.rotate(Math.PI/4);
+  }
+  // Center red dot
+  ctx.beginPath();
+  ctx.arc(0, 0, 8, 0, Math.PI * 2);
+  ctx.fillStyle = '#900';
+  ctx.fill();
+  ctx.restore();
+
+  // 9. Pockets (Blue circles with red bases)
+  pocketPos.forEach(p => {
+    // Outer red base
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, POCKET_R + 5, 0, Math.PI * 2);
+    ctx.fillStyle = '#900';
+    ctx.fill();
+    
+    // Blue hole
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, POCKET_R, 0, Math.PI * 2);
+    ctx.fillStyle = '#3498db'; 
+    ctx.fill();
+    
+    // Inner black hole depth
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, POCKET_R - 8, 0, Math.PI * 2);
+    ctx.fillStyle = '#000';
+    ctx.fill();
+  });
+}
+
+function drawPieces() {
+  for (let p of gameState.pieces) {
+    if (!p.active) continue;
+
+    // Shadow
+    ctx.beginPath();
+    ctx.arc(p.x + 4, p.y + 4, p.radius, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(0,0,0,0.4)';
+    ctx.fill();
+
+    // Body
+    ctx.beginPath();
+    ctx.arc(p.x, p.y, p.radius, 0, Math.PI * 2);
+
+    if (p.color === 'white') {
+      // Creamy wooden puck
+      ctx.fillStyle = '#fdf1c6';
+      ctx.fill();
+      ctx.strokeStyle = '#c2a878';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+      // Inner ring 1
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.radius * 0.7, 0, Math.PI * 2);
+      ctx.strokeStyle = '#e6cfa0';
+      ctx.stroke();
+      // Inner ring 2
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.radius * 0.4, 0, Math.PI * 2);
+      ctx.stroke();
+      
+    } else if (p.color === 'black') {
+      // Glossy black puck
+      ctx.fillStyle = '#222';
+      ctx.fill();
+      ctx.strokeStyle = '#000';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+      // Inner rings
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.radius * 0.7, 0, Math.PI * 2);
+      ctx.strokeStyle = '#444';
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.radius * 0.4, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.radius * 0.15, 0, Math.PI * 2);
+      ctx.fillStyle = '#000';
+      ctx.fill();
+      
+    } else if (p.color === 'queen') {
+      // Red Queen
+      ctx.fillStyle = '#e74c3c';
+      ctx.fill();
+      ctx.strokeStyle = '#900';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+      // Inner rings
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.radius * 0.7, 0, Math.PI * 2);
+      ctx.strokeStyle = '#a93226';
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.radius * 0.4, 0, Math.PI * 2);
+      ctx.stroke();
+      
+    } else if (p.color === 'striker') {
+      // Aiming line
+      if (gameState.phase === 'aim' || gameState.aiming) {
+        ctx.save();
+        ctx.translate(p.x, p.y);
+        ctx.rotate(gameState.aimAngle);
+        ctx.beginPath();
+        ctx.moveTo(0, 0);
+        ctx.lineTo(0, -400);
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.7)';
+        ctx.setLineDash([10, 10]);
+        ctx.lineWidth = 4;
+        ctx.stroke();
+        ctx.restore();
+      }
+
+      // Striker (Matches your photo: dark rim, red top, white center)
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.radius, 0, Math.PI * 2);
+      ctx.fillStyle = '#4a1515'; // Dark brown/black edge
+      ctx.fill();
+      
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.radius - 4, 0, Math.PI * 2);
+      ctx.fillStyle = '#b03a2e'; // Red body
+      ctx.fill();
+      
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.radius * 0.5, 0, Math.PI * 2);
+      ctx.strokeStyle = '#fdf1c6'; // White ring
+      ctx.lineWidth = 3;
+      ctx.stroke();
+      
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.radius * 0.15, 0, Math.PI * 2);
+      ctx.fillStyle = '#fdf1c6'; // White dot
+      ctx.fill();
+    }
+  }
+}
+
+// ==========================================
+// PHYSICS & GAME LOGIC
+// ==========================================
+
+function resolveCollision(p1, p2) {
+  const dx = p2.x - p1.x;
+  const dy = p2.y - p1.y;
+  const dist = Math.hypot(dx, dy);
+  const minDist = p1.radius + p2.radius;
+
+  if (dist < minDist) {
+    const overlap = minDist - dist;
+    const nx = dx / dist;
+    const ny = dy / dist;
+
+    p1.x -= nx * overlap * 0.5;
+    p1.y -= ny * overlap * 0.5;
+    p2.x += nx * overlap * 0.5;
+    p2.y += ny * overlap * 0.5;
+
+    const rvx = p2.vx - p1.vx;
+    const rvy = p2.vy - p1.vy;
+    const velAlongNormal = rvx * nx + rvy * ny;
+
+    if (velAlongNormal > 0) return; 
+
+    let impulse = -(1 + RESTITUTION) * velAlongNormal;
+    impulse /= 2; 
+
+    p1.vx -= impulse * nx;
+    p1.vy -= impulse * ny;
+    p2.vx += impulse * nx;
+    p2.vy += impulse * ny;
+  }
+}
+
+function checkPockets(p) {
+  for (let pocket of pocketPos) {
+    const dist = Math.hypot(p.x - pocket.x, p.y - pocket.y);
+    if (dist < POCKET_R - 5) {
+      p.active = false;
+      p.vx = 0; p.vy = 0;
+      if (p.type !== 'striker' && p.color !== 'queen') {
+        gameState.scores[p.color]++;
+      }
+      break;
+    }
+  }
+}
+
+function updatePhysics() {
+  let moving = false;
+  const activePieces = gameState.pieces.filter(p => p.active);
+
+  for (let p of activePieces) {
+    p.x += p.vx;
+    p.y += p.vy;
+    p.vx *= FRICTION;
+    p.vy *= FRICTION;
+
+    if (Math.abs(p.vx) < 0.05) p.vx = 0;
+    if (Math.abs(p.vy) < 0.05) p.vy = 0;
+
+    if (p.vx !== 0 || p.vy !== 0) moving = true;
+
+    // Wall collisions (Use the outer black box as the boundary)
+    const bound = BOARD_PADDING + 45;
+    if (p.x - p.radius < bound) { p.x = bound + p.radius; p.vx *= -RESTITUTION; }
+    if (p.x + p.radius > SIZE - bound) { p.x = SIZE - bound - p.radius; p.vx *= -RESTITUTION; }
+    if (p.y - p.radius < bound) { p.y = bound + p.radius; p.vy *= -RESTITUTION; }
+    if (p.y + p.radius > SIZE - bound) { p.y = SIZE - bound - p.radius; p.vy *= -RESTITUTION; }
+
+    checkPockets(p);
+  }
+
+  for (let i = 0; i < activePieces.length; i++) {
+    for (let j = i + 1; j < activePieces.length; j++) {
+      resolveCollision(activePieces[i], activePieces[j]);
+    }
+  }
+
+  gameState.isMoving = moving;
+
+  if (!moving && gameState.phase === 'shooting') {
+    setTimeout(endTurn, 300);
+    gameState.phase = 'wait';
+  }
+}
+
+function render() {
+  drawBoard();
+  drawPieces();
+}
+
+const powerSlider = document.getElementById('powerSlider');
+const shootBtn = document.getElementById('shootBtn');
+const aimControls = document.getElementById('aim-controls');
+const statusText = document.getElementById('status');
+const passScreen = document.getElementById('pass-screen');
+const passTitle = document.getElementById('pass-title');
+const startBtn = document.getElementById('start-btn');
+
+canvas.addEventListener('pointerdown', (e) => {
+  if (gameState.phase !== 'aim' || gameState.isMoving) return;
+  
+  const rect = canvas.getBoundingClientRect();
+  const scaleX = canvas.width / rect.width;
+  const scaleY = canvas.height / rect.height;
+  const mouseX = (e.clientX - rect.left) * scaleX;
+  const mouseY = (e.clientY - rect.top) * scaleY;
+  
+  gameState.aiming = true;
+  updateAimAngle(mouseX, mouseY);
+});
+
+canvas.addEventListener('pointermove', (e) => {
+  if (!gameState.aiming) return;
+  
+  const rect = canvas.getBoundingClientRect();
+  const scaleX = canvas.width / rect.width;
+  const scaleY = canvas.height / rect.height;
+  const mouseX = (e.clientX - rect.left) * scaleX;
+  const mouseY = (e.clientY - rect.top) * scaleY;
+  
+  updateAimAngle(mouseX, mouseY);
+});
+
+canvas.addEventListener('pointerup', () => {
+  gameState.aiming = false;
+});
+
+function updateAimAngle(targetX, targetY) {
+  const st = gameState.striker;
+  const dx = targetX - st.x;
+  const dy = targetY - st.y;
+  
+  let angle = Math.atan2(dy, dx);
+  
+  if (gameState.turn === 0 && dy > 0) angle = Math.PI; 
+  if (gameState.turn === 1 && dy < 0) angle = 0;
+
+  gameState.aimAngle = angle + Math.PI/2;
+  st.aimAngle = gameState.aimAngle;
+}
+
+shootBtn.addEventListener('click', () => {
+  if (gameState.phase !== 'aim' || gameState.isMoving) return;
+  
+  const power = parseInt(powerSlider.value) / 100;
+  if (power === 0) return;
+
+  const st = gameState.striker;
+  const speed = power * 45; 
+  
+  let angleRad = gameState.aimAngle - Math.PI/2;
+  st.vx = Math.cos(angleRad) * speed;
+  st.vy = Math.sin(angleRad) * speed;
+
+  gameState.phase = 'shooting';
+  aimControls.classList.remove('active');
+  powerSlider.value = 0;
+});
+
+function endTurn() {
+  if (!gameState.striker.active) {
+    if (gameState.turn === 0 && gameState.scores.white > 0) gameState.scores.white--;
+    if (gameState.turn === 1 && gameState.scores.black > 0) gameState.scores.black--;
+  }
+
+  gameState.turn = 1 - gameState.turn;
+  resetStrikerPosition();
+  
+  gameState.phase = 'pass';
+  passTitle.textContent = gameState.turn === 0 ? "Player 1's Turn (White)" : "Player 2's Turn (Black)";
+  passScreen.style.display = 'flex';
+  
+  updateUI();
+}
+
+startBtn.addEventListener('click', () => {
+  passScreen.style.display = 'none';
+  gameState.phase = 'aim';
+  aimControls.classList.add('active');
+  updateUI();
+});
+
+function updateUI() {
+  const tColor = gameState.turn === 0 ? "White" : "Black";
+  statusText.textContent = `P1 (White): ${gameState.scores.white} | P2 (Black): ${gameState.scores.black} | Turn: Player ${gameState.turn + 1} (${tColor})`;
+}
+
+function resetGame() {
+  gameState.turn = 0;
+  gameState.scores = { white: 0, black: 0 };
+  gameState.phase = 'pass';
+  initPieces();
+  updateUI();
+  
+  passTitle.textContent = "Player 1's Turn (White)";
+  passScreen.style.display = 'flex';
+  aimControls.classList.remove('active');
+}
+
+function gameLoop() {
+  updatePhysics();
+  render();
+  requestAnimationFrame(gameLoop);
+}
+
+initPieces();
+updateUI();
+gameLoop();
+passScreen.style.display = 'flex';
+
+</script>
+</body>
+</html>
